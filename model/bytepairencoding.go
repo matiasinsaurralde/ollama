@@ -105,8 +105,13 @@ func (bpe BytePairEncoding) Encode(s string, addSpecial bool) ([]int32, error) {
 		}
 	}
 
+	var sb strings.Builder
 	var ids []int32
 	for _, frag := range fragments {
+		// Skip empty fragments:
+		if len(frag.ids) == 0 && len(frag.value) == 0 {
+			continue
+		}
 		if len(frag.ids) > 0 {
 			ids = append(ids, frag.ids...)
 			continue
@@ -114,7 +119,6 @@ func (bpe BytePairEncoding) Encode(s string, addSpecial bool) ([]int32, error) {
 
 		for split := range bpe.split(frag.value) {
 			// TODO: process splits concurrently
-			var sb strings.Builder
 			for _, b := range []byte(split) {
 				r := rune(b)
 				switch {
@@ -128,14 +132,16 @@ func (bpe BytePairEncoding) Encode(s string, addSpecial bool) ([]int32, error) {
 
 				sb.WriteRune(r)
 			}
+			idStr := sb.String()
+			sb.Reset()
 
 			// short circuit if the fragment is in the vocabulary
-			if id := bpe.vocab.Encode(sb.String()); id >= 0 {
+			if id := bpe.vocab.Encode(idStr); id >= 0 {
 				ids = append(ids, id)
 				continue
 			}
 
-			runes := []rune(sb.String())
+			runes := []rune(idStr)
 			merges := make([]merge, len(runes))
 			for r := range runes {
 				merges[r] = merge{
