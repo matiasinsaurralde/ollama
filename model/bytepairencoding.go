@@ -7,6 +7,7 @@ import (
 	"iter"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/dlclark/regexp2"
 	heap "github.com/emirpasic/gods/v2/trees/binaryheap"
@@ -21,10 +22,22 @@ type BytePairEncoding struct {
 var _ TextProcessor = (*BytePairEncoding)(nil)
 
 func NewBytePairEncoding(pre string, vocab *Vocabulary) BytePairEncoding {
-	return BytePairEncoding{
+	bpe := BytePairEncoding{
 		pre:   regexp2.MustCompile(pre, regexp2.Unicode|regexp2.RE2),
 		vocab: vocab,
 	}
+
+	// Preprocess special tokens concurrently:
+	var wg sync.WaitGroup
+	for _, special := range bpe.vocab.SpecialVocabulary() {
+		go func() {
+			defer wg.Done()
+			wg.Add(1)
+			_ = bpe.vocab.Encode(special)
+		}()
+	}
+	wg.Wait()
+	return bpe
 }
 
 func (bpe BytePairEncoding) Vocabulary() *Vocabulary {
