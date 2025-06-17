@@ -15,8 +15,9 @@ import (
 )
 
 type BytePairEncoding struct {
-	pre   *regexp2.Regexp
-	vocab *Vocabulary
+	pre                 *regexp2.Regexp
+	vocab               *Vocabulary
+	avgSpecialTokenSize int // Average size of special tokens in bytes
 }
 
 var _ TextProcessor = (*BytePairEncoding)(nil)
@@ -27,9 +28,19 @@ func NewBytePairEncoding(pre string, vocab *Vocabulary) BytePairEncoding {
 		vocab: vocab,
 	}
 
+	// Calculate average special token size
+	var totalSize int
+	specialTokens := bpe.vocab.SpecialVocabulary()
+	for _, special := range specialTokens {
+		totalSize += len(special)
+	}
+	if len(specialTokens) > 0 {
+		bpe.avgSpecialTokenSize = totalSize / len(specialTokens)
+	}
+
 	// Preprocess special tokens concurrently:
 	var wg sync.WaitGroup
-	for _, special := range bpe.vocab.SpecialVocabulary() {
+	for _, special := range specialTokens {
 		go func() {
 			defer wg.Done()
 			wg.Add(1)
@@ -239,12 +250,19 @@ func (l lazyIdsString) LogValue() slog.Value {
 }
 
 func (bpe BytePairEncoding) Decode(ids []int32) (string, error) {
+	// Estimate capacity based on number of tokens and average special token size
+	estimatedSize := len(ids) * bpe.avgSpecialTokenSize
+	if estimatedSize == 0 {
+		estimatedSize = len(ids) * 4 // Fallback to original estimate if no special tokens
+	}
+
 	var sb strings.Builder
+	sb.Grow(estimatedSize)
+
 	for _, id := range ids {
 		for _, r := range bpe.vocab.Decode(id) {
 			switch {
 			case r == 0x0100:
-				// this produces 0x00 aka NULL
 				continue
 			case r == 0x0143:
 				r = 0x00ad
@@ -254,14 +272,11 @@ func (bpe BytePairEncoding) Decode(ids []int32) (string, error) {
 				r = r - 0x00a2
 			}
 
-			// NOTE: not using WriteRune here because it writes the UTF-8
-			// encoding of the rune which is _not_ what we want
 			if err := sb.WriteByte(byte(r)); err != nil {
 				return "", err
 			}
 		}
 	}
 
-	slog.Log(context.TODO(), logutil.LevelTrace, "decoded", "string", sb.String(), "from", lazyIdsString{ids: ids})
 	return sb.String(), nil
 }
