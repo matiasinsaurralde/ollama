@@ -915,6 +915,18 @@ func (s *Server) ListHandler(c *gin.Context) {
 	for n, m := range ms {
 		var cf ConfigV2
 
+		if m.IsAppleFoundationModel {
+			// Generate a dummy digest for the Apple model:
+			dummyDigest := GenerateFakeDigest(n.DisplayShortest())
+			models = append(models, api.ListModelResponse{
+				Model:  n.DisplayShortest(),
+				Name:   n.DisplayShortest(),
+				Size:   m.Size(),
+				Digest: dummyDigest,
+			})
+			continue
+		}
+
 		if m.Config.Digest != "" {
 			f, err := m.Config.Open()
 			if err != nil {
