@@ -80,6 +80,9 @@ This is a genuine multi-bug CHAIN and the strongest finding. Reads any file the 
 
 **Also (same root):** the WRITE side (C2) remains: arbitrary `.tmp` write + arbitrary dir creation. Full RCE via `.tmp`→dlopen is env-dependent/low-confidence (globs `libggml-*.so*` match `.tmp` but exact-name dlopen defeats it). Fix: validate `layer.Digest` against `^sha256[:-][0-9a-f]{64}$` in pull/pushWithTransfer AND in digestToPath, matching manifest.BlobsPath.
 
+- Template/SSTI RCE: BLOCKED. Go text/template only, FuncMap = {json,currentDate,yesterdayDate,toTypeScriptType} (template/template.go:120) — no os/exec/io. No Go Jinja engine; chat_template.jinja is passed to llama.cpp subprocess (--jinja), not executed in Go. Renderers bounds-checked; panics caught by gin.Recovery → per-request 500 not process crash. Only speculative: infinite-recursion TEMPLATE DoS (upstream behavior, fatal stack-exhaust bypasses Recovery). Reopen only with new mechanism.
+- Exec/library-load RCE sweep: BLOCKED. All subprocess sinks (llama-quantize, llama-server, ollama runner, imagegen/mlx) use fixed exe + argv (no shell); quantize type is strict-whitelisted (fs/ggml/type.go:60); LD_LIBRARY_PATH/GGML_BACKEND_PATH built only from GPU-discovery/env, never request-tainted. No command-injection RCE. Reopen only with a new mechanism.
+
 ## Active Round 2 agents
 - C2→RCE escalation (find `.tmp`/created-dir consumer, push read primitive, Windows path angle)
 - Template/SSTI RCE (text/template FuncMap, Jinja chat_template)
