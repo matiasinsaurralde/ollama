@@ -182,3 +182,17 @@ Blast radius for ALL MLX findings = the `ollama runner --mlx-engine` CHILD proce
 - A/F5: port-alloc TOCTOU (bind :0, Close, reuse) + weak math/rand fallback (:362).
 - **A/F6 (Low):** `-c = NumCtx*numParallel` (:372) unclamped when model train-ctx metadata==0 (server.go:113 only clamps if trainCtx>0) → huge/negative -c → runner load crash. Mitigated by VRAM preflight when mem-prediction meaningful.
 - NEGATIVE: "cancel kills shared runner" NOT reachable — cancellation only aborts that request's runner HTTP call + releases sem slot; refcount-gated.
+
+### Agent D — multimodal media path (RESULT)
+- **D1 (HIGH, remote, CHILD crash):** media-marker desync — `model/renderers/image_tags.go:18` `if strings.Contains(content,"[img-") { return content, ... }` suppresses ALL `[img-N]` insertion for that message when attacker text contains bare `[img-`, but images still appended to media[]. Boundary loop (llama_server.go:1565-1577) appends one MultimodalData per image with NO `#markers==#data` check → mismatch to llama.cpp mtmd → runner crash/DoS. Single request, renderer vision models (gemma3,qwen2.5/3-vl,glm-ocr,lfm2-vl,nemotron-nano-vl), audio too. Sharpens B2.
+- **D2 (MEDIUM):** positional injection — `strings.Replace(prompt,"[img-N]",marker,1)` first-occurrence + prompt.go leaves user literal `[img-N]`; attacker relocates image splice position (prompt-structure injection, counts stay matched). Per-process marker itself unforgeable (crypto-rand).
+- **D3 (MEDIUM, DAEMON OOM, remote/unauth):** NO HTTP body-size limit (`server/routes.go:2005` http.Server no MaxBytes; gin ShouldBindJSON buffers whole body) + unbounded base64 decode (openai.go:705 decodeImageURL, anthropic.go:1002, openai.go:539 input_audio, raw api.Message.Images) + re-encode copies (llama_server.go:1571) → daemon memory exhaustion. Only ResponsesMiddleware(20MB zstd)+TranscriptionMiddleware(25MB multipart) are capped.
+- D4 (info): data-URL is allowlisted (image/{jpeg,jpg,png,webp} or bare data:;base64,); http/https rejected — no SSRF/traversal.
+- **D5 (reassuring):** imagegen Width/Height capped 4096 (routes.go:3151) + model clamps <=0→1024, ≤4MP before alloc (flux2.go:230); int32*int32 can't overflow at those bounds. Image-EDIT path NOT wired (imagegen.go:64 ignores req.Images) → Go `image.Decode` decompression-bomb NOT remotely reachable in this build.
+- No temp-file / path-traversal in server media path (negative).
+
+## BOUNDARY AUDIT — CONSOLIDATED (crash-domain matters)
+DAEMON-side (affect main process): D3 no-body-limit base64 OOM (remote,unauth) ; B4 unbounded io.ReadAll on non-stream runner responses (needs hostile/raced runner via B3) ; A/F3 refcount corruption on reload (speculative, Go-safe) ; B2 fragile Prompt.(string) assertion (:1566, not currently reachable).
+CHILD-only (runner dies, daemon survives+reports): B1/format→grammar bomb ; D1/B2 media-marker desync→mtmd ; C M1 null mlx_array SIGSEGV / M2 unbounded prompt / M3 repeat_last_n alloc ; A/F4 keep_alive:0 load/unload amplification.
+LOCAL-only: runner port no daemon↔runner auth (A/F1,B3,C/M4) + B3 close-then-reuse TOCTOU → local MITM → chains into B4 daemon OOM.
+REASSURING NEGATIVES: A/F2 no attacker-string→argv/env (injection-RCE dead) ; C MLX C++ memory-safe via mlx-c try/catch + captured error handler (no corruption, child-crash only) ; C1 safetensors OOM NOT reachable at inference ; C/C++ crash-domain isolation = child only.
