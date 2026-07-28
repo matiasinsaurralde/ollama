@@ -63,7 +63,8 @@ Note: some may overlap upstream patterns; regardless they are real remote crashe
 - The "SQL injection" and "auth bypass" scenarios in the brief appear to be DISTRACTORS (or unreachable); the live remote vulns are the model/registry pull + convert paths.
 - C2 escalation dead-ends (root): `fixBlobs` (server/fixblobs.go) only renames `sha256:`→`sha256-`, ignores `.tmp` — not a promoter. Non-.tmp write blocked by hash gate. Manifest write needs download success (unreachable w/ traversal digest).
 
-### C4 (PRIMARY — escalation agent + root-verified) — Remote ARBITRARY FILE READ + EXFILTRATION chain via x/transfer digest (pull-plant → push-read) — HIGH
+### C4 (PRIMARY — CONFIRMED via adversarial refutation ✅✅) — Remote ARBITRARY FILE READ + EXFILTRATION chain via x/transfer digest (pull-plant → push-read) — HIGH
+> Adversarial reviewer verified ALL 6 load-bearing links by reading code and could not refute any. Path math checked: `filepath.Join("<models>/blobs", digestToPath("sha256:../../../../../../../etc/passwd")) == /etc/passwd`. No validation on either transfer path; manifest written+reread verbatim. Constraints (not refutations): (1) network reach to the ollama API (default 127.0.0.1:11434, commonly 0.0.0.0 no-auth); (2) `../` depth tuned to victim models dir (attacker picks); (3) EXACT target file byte-size known — deterministic for fixed-size secrets (`~/.ollama/id_ed25519`, SSH keys), brute-forceable otherwise (each size-miss just aborts that attempt).
 This is a genuine multi-bug CHAIN and the strongest finding. Reads any file the ollama daemon can read (SSH keys, TLS keys, `~/.ollama/id_ed25519`, cloud tokens, /etc/passwd) and ships it to an attacker-controlled registry. Fully remote, unauthenticated.
 
 **Bugs chained:**
