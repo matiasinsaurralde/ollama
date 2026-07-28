@@ -141,3 +141,19 @@ All launched routes have reported. 9 agents across F1–F5 + escalation/refutati
 - Template/SSTI RCE (text/template FuncMap, Jinja chat_template)
 - Exec/library-load RCE sweep (quantize args, runner spawn, LD paths)
 - F2 middleware/openai/anthropic translation (still running from wave 1)
+
+---
+## BOUNDARY AUDIT: user request → Go → llama-server / mlx-runner (deep dive)
+
+### Request flow (traced)
+`/api/chat` ChatHandler (routes.go:2445) / `/api/generate` GenerateHandler (:254) → `chatPrompt` render (server/prompt.go, routes.go:2705) producing `prompt` + `media` (stable `[img-N]` markers) → scheduler `GetRunner`/`load` (sched.go:502), engine select `IsMLX()` (sched.go:531) → runner spawn → `r.Completion(...)` (routes.go:2777) → runner client:
+- GGUF: `llm/llama_server.go:1490 Completion()` builds `llamaServerCompletionRequest` (:1521) → `POST http://127.0.0.1:<port>/completion` (:1586).
+- MLX: `x/mlxrunner/client.go:142 Completion()` → `POST http://127.0.0.1:<port>/completion` (:157).
+
+### Root-verified boundary properties
+- **Runner is localhost + ephemeral port + NO AUTH.** `startLlamaServer` binds llama-server `--host 127.0.0.1` (llama_server.go:369) on an OS-allocated ephemeral port (:353-357), `--no-webui --offline`. No authentication between daemon↔runner. ⇒ any LOCAL process can discover the port (scan 49152-65535 / /proc/net/tcp) and drive a loaded model directly, bypassing the daemon. Local-only (not remote); `--offline` blocks SSRF from the runner. Same pattern for MLX runner (127.0.0.1). Severity: low (local), but a real trust-boundary note.
+- **Media marker: wire marker is crypto-random (DEFENDED).** `newLlamaServerMediaMarker` (:231) uses `crypto/rand` 16 bytes → `<__ollama_media_<32hex>__>`, per-process, never sent to client. So a user cannot inject/guess the llama-server media boundary. BUT the intermediate Go-layer marker `[img-N]` (:1569) is guessable/user-visible; `strings.Replace(prompt, "[img-N]", marker, 1)` replaces one per media → if a user's message TEXT contains `[img-N]`, replacement position can desync (prompt-injection/confusion within model input; not a daemon memory-safety bug). Under agent review.
+- **`format` (JSON schema) passed RAW to llama-server.** `req.Format` (attacker json.RawMessage from API) → if starts with `{` → `lsReq.JsonSchema = req.Format` (llama_server.go:1553-1554), sent to llama-server which converts to grammar. Pathological/deeply-nested schema ⇒ excessive CPU/mem in llama-server grammar construction = **runner-side (child) DoS/hang**, not daemon crash. Raw `grammar` field is NOT API-settable (only internal). Under agent review.
+- **Crash-domain rule:** a memory-safety bug in llama.cpp/ggml or MLX C++ crashes the CHILD process only; the scheduler observes the runner die (llm/status.go, exit_status.go). Contrast the Go daemon (C2/C3/C4/C5) where a bug is a full-daemon compromise. This process isolation is the key mitigation for the C/C++ tier.
+
+### Round: 4 agents auditing (Go orchestration+spawn, llama-server HTTP boundary, MLX runner+cgo+model-load, multimodal media path) — results pending.
