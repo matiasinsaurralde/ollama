@@ -196,3 +196,15 @@ DAEMON-side (affect main process): D3 no-body-limit base64 OOM (remote,unauth) ;
 CHILD-only (runner dies, daemon survives+reports): B1/format→grammar bomb ; D1/B2 media-marker desync→mtmd ; C M1 null mlx_array SIGSEGV / M2 unbounded prompt / M3 repeat_last_n alloc ; A/F4 keep_alive:0 load/unload amplification.
 LOCAL-only: runner port no daemon↔runner auth (A/F1,B3,C/M4) + B3 close-then-reuse TOCTOU → local MITM → chains into B4 daemon OOM.
 REASSURING NEGATIVES: A/F2 no attacker-string→argv/env (injection-RCE dead) ; C MLX C++ memory-safe via mlx-c try/catch + captured error handler (no corruption, child-crash only) ; C1 safetensors OOM NOT reachable at inference ; C/C++ crash-domain isolation = child only.
+
+## VALIDATION STATUS (what was actually EXECUTED vs analysis-only)
+Honest accounting — most boundary findings are code-analysis (by agents), NOT dynamically reproduced. Only the following were actually run:
+| Finding | Validation | Evidence |
+|---------|-----------|----------|
+| **C3** (convert crash) | **FULL E2E** — real router + curl, daemon process died (exit 2) | server log stack trace `parseSafetensors:97 → ConvertModel → CreateHandler.func1 (create.go:119)`; `convert/poc_c3_test.go` |
+| **D1** (media-marker desync) | **Go-side E2E validated** (deterministic test). C++/mtmd crash consequence NOT run (needs real llama-server binary) | `model/renderers/boundary_poc_test.go`: attacker text `"[img-"`+1 image → real GlmOcrRenderer → prompt with **0 markers / 1 payload**; control `"read this"` → 1/1. |
+| **D3** (no HTTP body-size limit) | **Validated** (absence of cap). Full multi-GB OOM not triggered | 120 MB body to `/api/chat` accepted & buffered (404 model-not-found, past JSON bind); no 413. |
+| B1 (schema→grammar bomb) | ANALYSIS-ONLY | code read: `format` raw → json_schema (llama_server.go:1546); llama.cpp compile effect not run |
+| B2/B4/B5, C M1-M4, A F1/F3/F4/F6 | ANALYSIS-ONLY | code read + adversarial agent; not executed |
+
+**Why the rest aren't E2E here:** the crash lands inside the `llama-server` (llama.cpp) or MLX C++ child, which requires building those native binaries (heavy cgo/CMake, or Apple/`libmlxc`) not present in this env; or needs real multi-GB allocations. The Go-observable halves (D1 request desync, D3 unbounded buffering) ARE reproduced above. C3 is the only full-stack daemon-crash reproduced.
