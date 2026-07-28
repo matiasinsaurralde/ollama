@@ -157,3 +157,12 @@ All launched routes have reported. 9 agents across F1–F5 + escalation/refutati
 - **Crash-domain rule:** a memory-safety bug in llama.cpp/ggml or MLX C++ crashes the CHILD process only; the scheduler observes the runner die (llm/status.go, exit_status.go). Contrast the Go daemon (C2/C3/C4/C5) where a bug is a full-daemon compromise. This process isolation is the key mitigation for the C/C++ tier.
 
 ### Round: 4 agents auditing (Go orchestration+spawn, llama-server HTTP boundary, MLX runner+cgo+model-load, multimodal media path) — results pending.
+
+### Agent C — MLX runner + model-load + cgo (RESULT)
+Blast radius for ALL MLX findings = the `ollama runner --mlx-engine` CHILD process only; daemon survives & reports exit. No C++ memory corruption / RCE reachable.
+- **C1 NOT reachable at inference (confirmed):** MLX loads via `x/mlxrunner/model/root.go:137 readBlobTensorQuantInfo` which BOUNDS header `>100MB` (root.go:148); tensor bytes parsed inside MLX C++ `mlx_load_safetensors` (mlx/io.go:38), not `x/safetensors`. C1 remains CLI-create-only.
+- **No corruption by design:** `mlx/mlx.go:40` installs `_mlx_capture_error_handler` replacing MLX's default abort; bad shape/index → std::invalid_argument caught in mlx-c try/catch → `mlxCheck` (mlx.go:58) panics at Eval → child crash. Not corruption.
+- M1 (child DoS): ~120 op wrappers in ops.go/slice.go ignore C return codes → null `mlx_array` → `Dim()`/`Size()` deref → SIGSEGV (uncaught, child only).
+- M2 (child OOM): no MaxBytesReader in x/mlxrunner; `/v1/tokenize` `io.Copy` (server.go:184) + `/v1/completions` decode buffer unbounded prompt before ctx check.
+- **M3 (child OOM, request-driven, notable):** `repeat_last_n` not capped to numCtx (sample/sample.go:233 normalize only maps -1); large value + repeat_penalty!=1 → `make([]int32,width)` + `mlx.Zeros(...)` ~GBs → child OOM. Remotely reachable via /api/chat IF daemon forwards it unclamped (TBD — cross-check llama-server path too).
+- M4 (local): runner port 127.0.0.1, ephemeral, NO auth → any local process can drive/DoS the loaded model.
