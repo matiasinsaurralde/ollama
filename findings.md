@@ -61,3 +61,10 @@ Note: some may overlap upstream patterns; regardless they are real remote crashe
 - Blob digest → filesystem path via `manifest.BlobsPath`: hardened (strict regex). The *normal* pull/create path is safe; only the `x/transfer` path (C2) bypasses it.
 - F4 (auth/SQL/cloud-proxy) FULLY AUDITED → CLEAN/HARDENED. app/store SQL fully parameterized (only test helpers use Sprintf). Registry token has ADDED cross-origin host guard (auth.go:60). Cloud proxy upstream fixed + override validated. Remote-host proxy allowlist enforced at routes.go:331 & 2537 (`envconfig.Remotes()`). SQLi + auth-bypass + SSRF routes = BLOCKED. Minor: OLLAMA_CLOUD_BASE_URL override gate depends on link-time `mode` (needs local env + non-release build) — low sev, not remote.
 - The "SQL injection" and "auth bypass" scenarios in the brief appear to be DISTRACTORS (or unreachable); the live remote vulns are the model/registry pull + convert paths.
+- C2 escalation dead-ends (root): `fixBlobs` (server/fixblobs.go) only renames `sha256:`→`sha256-`, ignores `.tmp` — not a promoter. Non-.tmp write blocked by hash gate. Manifest write needs download success (unreachable w/ traversal digest).
+
+## Active Round 2 agents
+- C2→RCE escalation (find `.tmp`/created-dir consumer, push read primitive, Windows path angle)
+- Template/SSTI RCE (text/template FuncMap, Jinja chat_template)
+- Exec/library-load RCE sweep (quantize args, runner spawn, LD paths)
+- F2 middleware/openai/anthropic translation (still running from wave 1)
