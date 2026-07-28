@@ -113,6 +113,10 @@ This is a genuine multi-bug CHAIN and the strongest finding. Reads any file the 
 - This is the cleanest "crash the process" scenario (no attacker registry needed). Fix: hold s.sched.loadedMu around the loop (snapshot).
 - Secondary races (race agent): activeLoading unlocked write (sched.go:643-653, shutdown-only), refCount underflow on reload interleaving (latent leak), evict deadlock via missed unloadedCh (OOM-retry path). Lower reachability.
 
+### C6 (F2 middleware — MEDIUM) — Unbounded top_logprobs → response-amplification DoS
+- `openai/openai.go:660` (`FromChatRequest`, TopLogprobs forwarded unchecked) & `openai/openai.go:772-784` (completions). OpenAI contract bounds 0–20 / 0–5 but translation layer does NO range check. `POST /v1/chat/completions {"top_logprobs":2000000000,"logprobs":true,"max_tokens":512,...}`: runner clamps k to vocab (no OOB) but computes+serializes ~vocab(128k+)×max_tokens logprob entries → multi-GB response, CPU/mem pinned. Unauthenticated amplification DoS. Not a hard crash.
+- F2 VERDICT: middleware exhaustively fuzzed (FromChat/Responses/Messages + streaming converters under -race + zstd bomb) — encoding_format/base64 correct, all type-assertions ,ok-guarded, no memory-safety crash. Area is defensively written. C6 is the only deviation.
+
 ## Active Round 2 agents
 - C2→RCE escalation (find `.tmp`/created-dir consumer, push read primitive, Windows path angle)
 - Template/SSTI RCE (text/template FuncMap, Jinja chat_template)
