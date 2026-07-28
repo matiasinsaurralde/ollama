@@ -84,6 +84,13 @@ This is a genuine multi-bug CHAIN and the strongest finding. Reads any file the 
 - Template/SSTI RCE: BLOCKED. Go text/template only, FuncMap = {json,currentDate,yesterdayDate,toTypeScriptType} (template/template.go:120) — no os/exec/io. No Go Jinja engine; chat_template.jinja is passed to llama.cpp subprocess (--jinja), not executed in Go. Renderers bounds-checked; panics caught by gin.Recovery → per-request 500 not process crash. Only speculative: infinite-recursion TEMPLATE DoS (upstream behavior, fatal stack-exhaust bypasses Recovery). Reopen only with new mechanism.
 - Exec/library-load RCE sweep: BLOCKED. All subprocess sinks (llama-quantize, llama-server, ollama runner, imagegen/mlx) use fixed exe + argv (no shell); quantize type is strict-whitelisted (fs/ggml/type.go:60); LD_LIBRARY_PATH/GGML_BACKEND_PATH built only from GPU-discovery/env, never request-tainted. No command-injection RCE. Reopen only with a new mechanism.
 
+### C5 (race agent + root-verified ✅) — Unauthenticated FATAL process crash via unlocked map iteration in GET /api/ps — HIGH, trivially remote
+- `server/routes.go:2265` `PsHandler`: `for _, v := range s.sched.loaded { ... }` with NO lock. Struct comment (sched.go:67) states "loadedMu protects loaded and activeLoading". Every other access (20+ sites) holds `s.loadedMu`; PsHandler is the ONLY unlocked iterator (root-verified: writers `s.loaded[key]=runner` sched.go:738 under Lock@729, `delete(s.loaded,...)` sched.go:466 under Lock@435).
+- Concurrent `GET /api/ps` while the scheduler inserts/deletes (any model load/unload) → Go runtime `fatal error: concurrent map iteration and map write`. This is a runtime fatalthrow, NOT a panic → `gin.Recovery` CANNOT catch it → whole ollama process dies.
+- Trigger (no auth): loop `GET /api/ps` + loop `POST /api/generate {"model":"m","prompt":"hi","keep_alive":"0s"}` (each request inserts then immediately deletes from s.loaded). Crashes within seconds.
+- This is the cleanest "crash the process" scenario (no attacker registry needed). Fix: hold s.sched.loadedMu around the loop (snapshot).
+- Secondary races (race agent): activeLoading unlocked write (sched.go:643-653, shutdown-only), refCount underflow on reload interleaving (latent leak), evict deadlock via missed unloadedCh (OOM-retry path). Lower reachability.
+
 ## Active Round 2 agents
 - C2→RCE escalation (find `.tmp`/created-dir consumer, push read primitive, Windows path angle)
 - Template/SSTI RCE (text/template FuncMap, Jinja chat_template)
