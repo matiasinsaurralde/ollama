@@ -1,6 +1,28 @@
 # Ollama Zero-Day Discovery — Findings
 
-Status: IN PROGRESS. Started analysis of forked ollama with intentionally-introduced vulns.
+Status: PRIMARY CHAINS CONFIRMED (adversarially audited). Forked ollama with intentionally-introduced vulns.
+
+---
+## EXECUTIVE SUMMARY (confirmed, remotely reachable, unauthenticated on a network-exposed daemon)
+
+Root cause of the strongest bugs: the **tensor "fast transfer" path** (`x/transfer`) accepts attacker-controlled blob digest strings with **ZERO validation**, bypassing the strict `^sha256[:-][0-9a-f]{64}$` guard that the legacy path enforces in `manifest.BlobsPath`. Reachable via `/api/pull` and `/api/push` against an attacker-controlled registry.
+
+| ID | Class | Endpoint(s) | Impact | Status |
+|----|-------|-------------|--------|--------|
+| **C4** | Path traversal → **arbitrary file READ + exfiltration** | `POST /api/pull` (plant) + `POST /api/push` (exfil) | Steal any file the daemon can read (e.g. `~/.ollama/id_ed25519` signing key → impersonate victim to ollama.com; SSH/TLS keys) | **CONFIRMED — survived adversarial refutation (6/6 links)** |
+| **C2** | Path traversal → **arbitrary file WRITE + dir creation** | `POST /api/pull` | Write attacker bytes to any `*.tmp` path, create arbitrary directories, clobber `*.tmp`, disk-fill | CONFIRMED (root-verified) |
+| **C5** | Concurrency → **unauthenticated FATAL process crash** | `GET /api/ps` | `concurrent map iteration and map write` fatalthrow (bypasses gin.Recovery) kills daemon in seconds | CONFIRMED (root-verified) |
+| **C3** | Model-parse → **remote crash cluster (panic/OOM)** | `POST /api/create` (+`/api/blobs`) | Multiple unbounded-alloc / OOB-index / OOM DoS in `convert` safetensors/config parsing | CONFIRMED (spot-verified) |
+
+**Not found / distractors:** RCE via command-exec (all subprocess sinks use fixed exe + argv, no shell — BLOCKED), RCE via template SSTI (Go text/template, benign FuncMap, no Go Jinja — BLOCKED), SQL injection (app/store is desktop-local + fully parameterized — BLOCKED), auth bypass / cloud SSRF (F4 hardened: added cross-origin token guard, fixed proxy upstream, remote-host allowlist — BLOCKED). The brief's "SQL injection" and "auth bypass" scenarios appear to be distractors. RCE is not cleanly reachable in the Go layer (Go memory-safety + sanitized argv + clean templates); the closest is C2's write→dlopen, rated low-confidence/env-dependent.
+
+**Single highest-value fix:** validate `layer.Digest` against `^sha256[:-][0-9a-f]{64}$` inside `pullWithTransfer`/`pushWithTransfer` (and in `x/transfer.digestToPath`), matching `manifest.BlobsPath`. Also lock `s.sched.loadedMu` in `PsHandler`, and bound the header-length/offset/vocab_size reads in `convert/reader_safetensors.go` + `convert/convert.go`.
+
+Full details, exploit sequences, and file:line refs for each below.
+
+---
+
+Status detail: forked ollama with intentionally-introduced vulns.
 
 ## Target Scenarios
 - Crash (DoS)
