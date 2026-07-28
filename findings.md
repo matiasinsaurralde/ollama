@@ -121,6 +121,17 @@ This is a genuine multi-bug CHAIN and the strongest finding. Reads any file the 
 ### Torch/pickle route — BLOCKED (dead end)
 - No zip-slip (gopickle pytorch.Load reads zip records in-memory, never extracts to disk). No pickle RCE (find-class resolver is a fixed allowlist; Go pickle can't exec arbitrary code). Unchecked assertions at reader_torch.go:20-21 exist but are UNREACHABLE remotely: `parseTorch` calls `pytorch.Load(p)` ignoring `fsys`, resolving `p` against process CWD not the tmpDir where the uploaded blob is linked → file never found → bytes never deserialized. Also stock/unmodified vs upstream. Redirect confirmed C3 (safetensors) is the reachable model-parse crash.
 
+## REPRODUCTION (dynamic PoC — actually executed)
+C3 is now reproduced end-to-end, not just static analysis:
+- **Parser + public-entry PoC:** `convert/poc_c3_test.go` — drives the real `parseSafetensors` and `convert.ConvertModel` (the exact fn server/create.go:571 calls). `go test ./convert/ -run TestPoC_C3 -v` → panics `index out of range [0] with length 0` (empty data_offsets) and `makeslice: cap out of range` (oversized header len).
+- **Full HTTP E2E:** stood up the real gin router via `s.GenerateRoutes()` + httptest, uploaded 3 blobs via `POST /api/blobs/:digest` (config.json `{"architectures":["LlamaForCausalLM"]}`, tokenizer.json `{}`, malicious model.safetensors with `data_offsets:[]`), then `POST /api/create`. Result: **whole process died, `exit status 2`**. Stack:
+  `parseSafetensors reader_safetensors.go:97 → parseTensors → ConvertModel convert.go:414 → convertFromSafetensors create.go:571 → CreateHandler.func1 create.go:195, created by CreateHandler create.go:119` (unrecovered goroutine → gin.Recovery does NOT catch → daemon crash).
+- **Goroutine-semantics PoC:** minimal program mirroring create.go:119 (bare `go func(){defer close(ch); panic()}()` under an outer recover) exits non-zero without reaching "still alive" — proves gin.Recovery cannot catch the child-goroutine panic.
+- Repro cost: one unauthenticated `POST /api/create` with ~3 tiny files (< 150 bytes total for the malicious safetensors). Deterministic, no race/timing, no GPU/model.
+
+### C5 reproduction status: NOT reproduced E2E (harder — it is a race)
+C5 (`GET /api/ps` unlocked map iteration) requires concurrent churn of `s.sched.loaded`, which only happens on real model LOAD/UNLOAD — that needs a real llama runner + model weights + timing to hit the `concurrent map iteration and map write` window. The code defect is unambiguous (PsHandler is the sole unlocked reader vs 20+ locked accesses), but I did NOT trigger the fatal at runtime. Reproducing it needs a loaded model cycling (e.g. repeated `/api/generate` with `keep_alive:"0s"`) hammered alongside `/api/ps`. Lower reproduction confidence than C3.
+
 ## Investigation status: COMPLETE (primary chains confirmed & audited)
 All launched routes have reported. 9 agents across F1–F5 + escalation/refutation/fresh-mechanism rounds.
 - CONFIRMED remote vulns: C4 (file read+exfil, audited), C2 (file write), C5 (FATAL crash /api/ps), C3 (full-process crash via /api/create), C6 (amplification DoS).
